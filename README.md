@@ -54,4 +54,4 @@ These are bounded observations, **not** a general vehicle-safety certification o
 
 ## License and attribution
 
-The reference files contain portions of comma.ai's openpilot code; its MIT license is retained in [LICENSE](LICENSE). The original generated cue and project-specific changes are offered under the same terms. OpenClaw/Astra attribution is stated above. No network addresses, location information, route identifiers, or device/owner identifiers are included in this repository.
+**MIT licensed**—reuse, modification, and redistribution are allowed if the copyright and license notice are retained. The reference files contain portions of comma.ai's openpilot code; its upstream copyright is preserved alongside the project-contributor notice in [LICENSE](LICENSE). The original cue, patches, tests, and documentation are offered under the same permissive terms. [NOTICE.md](NOTICE.md) records the requested **Created with OpenClaw using Astra** credit. No network addresses, location information, route identifiers, or device/owner identifiers are included in this repository.
