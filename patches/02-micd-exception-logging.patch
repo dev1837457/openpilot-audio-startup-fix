@@ -1,0 +1,19 @@
+--- a/openpilot/system/micd.py
++++ b/openpilot/system/micd.py
+@@ -105,9 +105,13 @@
+   @retry(attempts=10, delay=3)
+   def get_stream(self, sd):
+     # reload sounddevice to reinitialize portaudio
+-    sd._terminate()
+-    sd._initialize()
+-    return sd.InputStream(channels=1, samplerate=SAMPLE_RATE, callback=self.callback, blocksize=SAMPLE_BUFFER)
++    try:
++      sd._terminate()
++      sd._initialize()
++      return sd.InputStream(channels=1, samplerate=SAMPLE_RATE, callback=self.callback, blocksize=SAMPLE_BUFFER)
++    except Exception:
++      cloudlog.exception("micd audio stream initialization failed")
++      raise
+ 
+   def micd_thread(self):
+     # sounddevice must be imported after forking processes

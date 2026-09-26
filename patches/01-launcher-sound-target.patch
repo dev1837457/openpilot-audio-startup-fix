@@ -1,0 +1,44 @@
+--- a/launch_chffrplus.sh
++++ b/launch_chffrplus.sh
+@@ -28,6 +28,25 @@
+       "$DIR/openpilot/common/hardware/comma/updater" "$AGNOS_PY" "$MANIFEST"
+     done
+   fi
++}
++
++# Startup ordering only: sound.target is not proof of a healthy audio stream.
++function wait_for_sound {
++  local attempt
++  local max_attempts=60
++  echo "Waiting for system sound.target before starting openpilot manager"
++  for ((attempt=1; attempt<=max_attempts; attempt++)); do
++    # Bound a stalled systemctl/DBus query as well as the number of queries.
++    if timeout --kill-after=1s 1s systemctl is-active --quiet sound.target; then
++      echo "sound.target ready on check ${attempt}/${max_attempts}"
++      return 0
++    fi
++    if ((attempt < max_attempts)); then
++      sleep 1
++    fi
++  done
++  echo "ERROR: sound.target not ready after ${max_attempts} checks; openpilot manager NOT started. Reboot after correcting audio startup." >&2
++  return 1
+ }
+ 
+ function launch {
+@@ -88,6 +107,15 @@
+   # write tmux scrollback to a file
+   tmux capture-pane -pq -S-1000 > /tmp/launch_log
+ 
++  # Do not start manager before the OS has announced sound-card readiness.
++  # Keep this AFTER overlay update installation and hardware initialization.
++  if [ -f /AGNOS ]; then
++    if ! wait_for_sound >> /tmp/launch_log 2>&1; then
++      cat /tmp/launch_log >&2
++      return 1
++    fi
++  fi
++
+   # start manager
+   cd openpilot/system/manager
+   if [ ! -f "$DIR/prebuilt" ]; then

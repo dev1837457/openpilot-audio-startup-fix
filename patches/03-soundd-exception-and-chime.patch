@@ -1,0 +1,109 @@
+--- a/openpilot/selfdrive/ui/soundd.py
++++ b/openpilot/selfdrive/ui/soundd.py
+@@ -76,6 +76,27 @@
+ 
+     self.selfdrive_timeout_alert = False
+     self.pending_stop = False
++
++    # Optional startup cue has separate state and never enters the alert enum.
++    self.audio_ready_started = time.monotonic()
++    self.audio_ready_done = False
++    self.audio_ready_pending = False
++    self.audio_ready_frame = 0
++    self.audio_ready_callback_seen = False
++    self.audio_ready_sound = np.zeros(0, dtype=np.float32)
++    try:
++      with wave.open(BASEDIR + "/openpilot/selfdrive/assets/sounds/audio_ready.wav", 'r') as wav:
++        if (wav.getnchannels(), wav.getsampwidth(), wav.getframerate()) != (1, 2, SAMPLE_RATE):
++          raise ValueError("invalid audio-ready WAV format")
++        if not 0 < wav.getnframes() <= SAMPLE_RATE // 2:
++          raise ValueError("audio-ready WAV must be at most 0.5 seconds")
++        self.audio_ready_sound = np.frombuffer(wav.readframes(wav.getnframes()), dtype='<i2').astype(np.float32) / 32768
++        if len(self.audio_ready_sound) != wav.getnframes() or np.max(np.abs(self.audio_ready_sound)) > 0.2:
++          raise ValueError("invalid audio-ready WAV length or level")
++    except Exception:
++      # Optional asset must never keep safety audio from starting.
++      cloudlog.exception("soundd optional audio-ready chime unavailable")
++      self.audio_ready_done = True
+ 
+     self.spl_filter_weighted = FirstOrderFilter(0, 2.5, FILTER_DT, initialized=False)
+ 
+@@ -125,8 +146,27 @@
+     if status:
+       cloudlog.warning(f"soundd stream over/underflow: {status}")
+     data_out[:frames, 0] = self.get_sound_data(frames)
++    if self.current_alert != AudibleAlert.none:
++      self.audio_ready_pending = False
++    elif self.audio_ready_pending:
++      end = min(self.audio_ready_frame + frames, len(self.audio_ready_sound))
++      count = end - self.audio_ready_frame
++      # Fixed modest gain, independent of ambient-volume and critical-alert ramps.
++      data_out[:count, 0] = self.audio_ready_sound[self.audio_ready_frame:end] * 0.5
++      self.audio_ready_frame = end
++      if end == len(self.audio_ready_sound):
++        self.audio_ready_pending = False
++      # An alert arriving during the copy discards this cue buffer too.
++      if self.current_alert != AudibleAlert.none:
++        self.audio_ready_pending = False
++        data_out[:frames, 0] = self.get_sound_data(frames)
++
++    self.audio_ready_callback_seen = True
+ 
+   def update_alert(self, new_alert):
++    if new_alert != AudibleAlert.none:
++      self.audio_ready_pending = False
++      self.audio_ready_done = True
+     current_alert_played_once = self.current_alert == AudibleAlert.none or self.current_sound_frame >= len(self.loaded_sounds[self.current_sound])
+     # let looping sounds finish the current loop instead of cutting off mid tone
+     if new_alert == AudibleAlert.none and self.current_alert != AudibleAlert.none and sound_list[self.current_alert][1] is None:
+@@ -156,6 +196,25 @@
+       self.update_alert(AudibleAlert.none)
+       self.selfdrive_timeout_alert = False
+ 
++  def maybe_audio_ready(self, sm, stream):
++    # Cancel, never defer into a drive or replay after any alert/engagement.
++    if (time.monotonic() - self.audio_ready_started > 20 or sm['selfdriveState'].enabled or
++        self.current_alert != AudibleAlert.none or self.selfdrive_timeout_alert):
++      self.audio_ready_pending = False
++      self.audio_ready_done = True
++    if self.audio_ready_done:
++      return
++    age = time.monotonic() - sm.logMonoTime['soundPressure'] / 1e9
++    pressure = sm['soundPressure']
++    if (stream.active and self.audio_ready_callback_seen and sm.updated['soundPressure'] and
++        sm.valid['soundPressure'] and 0 <= age <= 0.5 and
++        sm.valid['selfdriveState'] and 0 <= time.monotonic() - sm.logMonoTime['selfdriveState'] / 1e9 <= 0.5 and
++        sm.logMonoTime['soundPressure'] / 1e9 >= self.audio_ready_started and
++        math.isfinite(pressure.soundPressureWeightedDb) and pressure.soundPressureWeighted > 0):
++      self.audio_ready_done = True
++      self.audio_ready_pending = True
++      cloudlog.info("soundd audio-ready cue armed: output active, fresh microphone data")
++
+   def calculate_volume(self, weighted_db):
+     volume = ((weighted_db - AMBIENT_DB) / DB_SCALE) * (MAX_VOLUME - MIN_VOLUME) + MIN_VOLUME
+     return math.pow(VOLUME_BASE, (np.clip(volume, MIN_VOLUME, MAX_VOLUME) - 1))
+@@ -163,9 +222,13 @@
+   @retry(attempts=10, delay=3)
+   def get_stream(self, sd):
+     # reload sounddevice to reinitialize portaudio
+-    sd._terminate()
+-    sd._initialize()
+-    return sd.OutputStream(channels=1, samplerate=SAMPLE_RATE, callback=self.callback, blocksize=SAMPLE_BUFFER)
++    try:
++      sd._terminate()
++      sd._initialize()
++      return sd.OutputStream(channels=1, samplerate=SAMPLE_RATE, callback=self.callback, blocksize=SAMPLE_BUFFER)
++    except Exception:
++      cloudlog.exception("soundd audio stream initialization failed")
++      raise
+ 
+   def soundd_thread(self):
+     # sounddevice must be imported after forking processes
+@@ -188,6 +251,7 @@
+             self.current_volume = self.calculate_volume(float(self.spl_filter_weighted.x))
+ 
+         self.get_audible_alert(sm)
++        self.maybe_audio_ready(sm, stream)
+ 
+         if self.current_alert in (AudibleAlert.warningSoft, AudibleAlert.warningImmediate):
+           elapsed = time.monotonic() - self.ramp_start_time
